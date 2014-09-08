@@ -22,6 +22,7 @@
 #define FGETID 0x9E	// Get ID
 #define FRDSTA 0x05	// Read status register
 #define FCLRFL 0x50	// Clear status flag register
+#define FRDMEM 0x03	// Read memory
 #define FWRENB 0x06	// Write enable
 #define FWRDSB 0x04	// Write disable
 #define FBULKE 0xC7	// Bulk erase
@@ -264,6 +265,30 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
     return 0;
 }
 
+int w125c_FlashBCheck(unsigned addr, unsigned len) {
+    unsigned char buf[4096];
+    unsigned i;
+    int toread, j;
+    
+    printf("W125C: INFO - Blank checking addresses %6.6X--%6.6X\n", addr, addr+len-1);
+    for (i=addr; i<addr+len; ) {
+	toread = (i+4096 < addr+len) ? 4096 : addr+len-i;
+	w125c_FlashRead(FRDMEM, &i, buf, toread);
+	for (j=0; j<toread; j++) {
+	    if (buf[j] != 0xFF) {
+		printf("\nW125C: BLANK CHECK FATAL - Failed at address 0x%6.6X: 0x%2.2X \n", buf[j] & 0xFF);
+		return -1;
+	    }
+	}
+	if (!(i & 0x1F000)) {
+	    printf(".");
+	    fflush(stdout);
+	}
+	i+= toread;
+    }
+    printf("\n");
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -332,6 +357,25 @@ int main(int argc, char **argv)
 		    if (addr > FSIZE) break;
 		    if (addr + len > FSIZE) len = FSIZE - addr;
 		    w125c_FlashErase(addr, len);
+		    break;
+	    }
+	    break;
+	case 'B':
+	    switch (argc) { 
+		case 3:		// Entire Flash
+		    w125c_FlashBCheck(0, FSIZE);
+		    break;
+		case 4:		// <bytes> from zero
+		    len = strtoul(argv[3], NULL, 0);
+		    if (len > FSIZE) len = FSIZE;
+		    w125c_FlashBCheck(0, len);
+		    break;
+		default:
+		    addr = strtoul(argv[4], NULL, 0);
+		    len = strtoul(argv[3], NULL, 0);
+		    if (addr > FSIZE) break;
+		    if (addr + len > FSIZE) len = FSIZE - addr;
+		    w125c_FlashBCheck(addr, len);
 		    break;
 	    }
 	    break;
