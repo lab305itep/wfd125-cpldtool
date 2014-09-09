@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <MEN/vme4l.h>
 #include <MEN/vme4l_api.h>
 #include <readline/readline.h>
@@ -353,11 +354,11 @@ int w125c_FlashWrite(unsigned addr, char * fname) {
 	    printf("\nW125C: WRITE FATAL - Timeout waiting for opration end\n");
 	    return -5;
 	}
-	caddr += todo;
-	if (!(caddr & 0x1FE00)) {
-	    printf("p");
+	if (!(caddr & 0x1FF00)) {
+	    printf("w");
 	    fflush(stdout);
 	}
+	caddr += todo;
 	if (feof(f)) break;
     }
     fclose(f);
@@ -438,6 +439,7 @@ int main(int argc, char **argv)
     VME4L_SPACE spc, spcr;
     vmeaddr_t vmeaddr;
     char flashID[] = {0x20, 0xBA, 0x18, 0x10};
+    struct stat st;
     
     printf("*** WFD125 Programming through CPLD tool (c) SvirLex 2014 ***\n");
 //	Open VME in A16/D16 and map entire region
@@ -542,6 +544,22 @@ int main(int argc, char **argv)
 		break;
 	    }
 	    w125c_FlashVerify(0, argv[3]);
+	    break;
+	case 'A':
+	    if (argc < 4) {
+		w125c_Usage();
+		break;
+	    }
+	    if (stat(argv[3], &st)) {
+		printf("W125C: FATAL - Cannot acess file %s\n", argv[3]);
+		break;
+	    }
+	    len = st.st_size;
+	    if (w125c_FlashErase(0, len)) break;
+	    if (w125c_FlashBCheck(0, len)) break;
+	    if (w125c_FlashWrite(0, argv[3])) break;
+	    if (w125c_FlashVerify(0, argv[3])) break;
+	    // Pulse prog here
 	    break;
 	default:
 	    w125c_Usage();
