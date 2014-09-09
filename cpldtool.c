@@ -28,8 +28,12 @@
 #define FBULKE 0xC7	// Bulk erase
 #define FSECTE 0xD8	// Sector erase
 #define FSSECE 0x20	// Subsector erase
+#define FPROGP 0x02	// Page program
 // FLASH sizes (bytes)
-#define FSIZE 0x1000000
+#define FSIZE 0x1000000	// Total size
+#define SSIZE 0x10000	// Sector size (256 sectors)
+#define SSSIZ 0x1000	// Subsector size (4096 subsectors)
+#define PSIZE 0x100	// Page size (64k pages)
 
 #ifndef SWAP_MODE
 #define SWAP_MODE VME4L_NO_SWAP
@@ -125,8 +129,8 @@ void w125c_Usage(void)
     printf("\t\tone arg - first <bytes>, two args - <bytes> starting at <begAddr>.\n");
     printf("\t\tErasure is made in 4kB sectors touched by <begAddr>-<begAddr>+<bytes> range.\n");
     printf("\tBlankcheck [<bytes> [<begAddr>]] -- check FLASH for blank values, same args.\n");
-    printf("\tWrite <filename> -- writes binary file to preerased FLASH from addr 0.\n");
-    printf("\tRead <filename> [<bytes>] -- reads <bytes> from FLASH to binary file.\n");
+    printf("\tWrite <filename> -- writes binary file to (preerased) FLASH from addr 0.\n");
+    printf("\tRead <filename> [<bytes>] -- reads <bytes> from FLASH addr 0 to binary file.\n");
     printf("\tVerify <filename> -- verifies FLASH against binary file.\n");
     printf("\tAutowrite <filename> -- does Erase (by file length), blank check, write and verify.");
     printf("\tProgram [<filename>] -- loads binary file directly to FPGA chain.\n");
@@ -151,7 +155,7 @@ int w125c_Map(unsigned addr, unsigned len, int fd)
     return rc;
 }
 
-void w125c_FlashRead(char cmd, unsigned * adr, char * buf, int len) {
+void w125c_FlashIO(char cmd, unsigned * adr, char * buf, int len) {
     
     int i;
     // assert PROG to disable Xilinx, enable flash access, no CS
@@ -160,24 +164,26 @@ void w125c_FlashRead(char cmd, unsigned * adr, char * buf, int len) {
     vwr(CSR, 0x23);
     // send command
     vwr(SDAT, cmd);
-    vrd(CSR);
     // send addr if rqd
     if (adr) {
 	vwr(SDAT, ((char *)adr)[2]);
-	vrd(CSR);
 	vwr(SDAT, ((char *)adr)[1]);
-	vrd(CSR);
 	vwr(SDAT, ((char *)adr)[0]);
-	vrd(CSR);
     }
-    // read byte by byte
-    for (i=0; i<len; i++) {
-    	// cycle clocks
-	vwr(SDAT, 0);
-	// small delay
-	vrd(CSR);
-	// read result
-	buf[i] = vrd(SDAT);
+    if (len > 0) {
+	// read byte by byte
+	for (i=0; i<len; i++) {
+    	    // cycle clocks
+	    vwr(SDAT, 0);
+	    // read result
+	    buf[i] = vrd(SDAT);
+	}
+    } else if (len < 0) {
+	// write byte by byte
+	for (i=0; i<(-len); i++) {
+    	    // write
+	    vwr(SDAT, buf[i]);
+	}
     }
     // deassert CS
     vwr(CSR, 0x22);
@@ -199,20 +205,20 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
     
     printf("W125C: INFO - Erasing subsectors %2.2X--%2.2X\n", baddr, eaddr);
     // Clear status flag reg (error bits)
-    w125c_FlashRead(FCLRFL, NULL, NULL, 0);
+    w125c_FlashIO(FCLRFL, NULL, NULL, 0);
     for ( ; baddr <= eaddr; ) {
 	caddr = baddr << 12;
 	// Write enable
-	w125c_FlashRead(FWRENB, NULL, NULL, 0);
+	w125c_FlashIO(FWRENB, NULL, NULL, 0);
 	// Check write enable bit
-	w125c_FlashRead(FRDSTA, NULL, buf, 1);
+	w125c_FlashIO(FRDSTA, NULL, buf, 1);
 	if (!(buf[0] & 0x02)) {
 	    printf("\nW125C: ERASE FATAL - Cannot set WRITE ENABLE bit\n");
 	    return -1;
 	}
 	// if from first subsector to the last one -- erase all
 	if (baddr == 0 && eaddr == 0xFFF) {
-	    w125c_FlashRead(FBULKE, NULL, NULL, 0);
+	    w125c_FlashIO(FBULKE, NULL, NULL, 0);
 	    baddr += 0x1000;
 	    printf("B");
 	    fflush(stdout);
@@ -220,7 +226,7 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
 	}
 	// if from first subsector in sector to the last one or further -- erase this sector
 	else if ((baddr & 0x00F) == 0 && eaddr >= (baddr | 0x00F)) {
-	    w125c_FlashRead(FSECTE, &caddr, NULL, 0);
+	    w125c_FlashIO(FSECTE, &caddr, NULL, 0);
 	    baddr += 0x10;
 	    printf("S");
 	    fflush(stdout);
@@ -228,14 +234,14 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
 	}
 	// otherwise erase this subsector 
 	else {
-	    w125c_FlashRead(FSSECE, &caddr, NULL, 0);
+	    w125c_FlashIO(FSSECE, &caddr, NULL, 0);
 	    baddr += 0x1;
 	    printf("s");
 	    fflush(stdout);
 	    timeout = 800;
 	}
 	// Check erase start
-	w125c_FlashRead(FRDSTA, NULL, buf, 1);
+	w125c_FlashIO(FRDSTA, NULL, buf, 1);
 	if (!(buf[0] & 0x01)) {
 	    printf("\nW125C: ERASE FATAL - Erase didn't start\n");
 	    return -2;
@@ -249,14 +255,14 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
 	ts.tv_nsec = 100000000; // 100 ms
 	for (i=0; i < timeout; i++ ) {
 	    // read status register
-	    w125c_FlashRead(FRDSTA, NULL, buf, 1);
+	    w125c_FlashIO(FRDSTA, NULL, buf, 1);
 	    // lower bit 1 -- busy
 	    if (!(buf[0] & 0x01)) break;
 	    if (!((i+1)%10)) printf(".");
 	    fflush(stdout);
 	    nanosleep(&ts, NULL);
 	}
-	if (i >= timeout/100) {
+	if (i >= timeout) {
 	    printf("\nW125C: ERASE FATAL - Timeout waiting for opration end\n");
 	    return -3;
 	}	
@@ -273,20 +279,89 @@ int w125c_FlashBCheck(unsigned addr, unsigned len) {
     printf("W125C: INFO - Blank checking addresses %6.6X--%6.6X\n", addr, addr+len-1);
     for (i=addr; i<addr+len; ) {
 	toread = (i+4096 < addr+len) ? 4096 : addr+len-i;
-	w125c_FlashRead(FRDMEM, &i, buf, toread);
+	w125c_FlashIO(FRDMEM, &i, buf, toread);
 	for (j=0; j<toread; j++) {
 	    if (buf[j] != 0xFF) {
-		printf("\nW125C: BLANK CHECK FATAL - Failed at address 0x%6.6X: 0x%2.2X \n", buf[j] & 0xFF);
+		printf("\nW125C: BLANK CHECK FATAL - Failed at address 0x%6.6X: 0x%2.2X \n", i+j, buf[j] & 0xFF);
 		return -1;
 	    }
 	}
 	if (!(i & 0x1F000)) {
-	    printf(".");
+	    printf("b");
 	    fflush(stdout);
 	}
 	i+= toread;
     }
     printf("\n");
+    return 0;
+}
+
+int w125c_Write(char * fname, unsigned addr) {
+
+    FILE * f;
+    int todo, i;
+    unsigned char buf[256];
+    unsigned char rbuf[2];
+    unsigned caddr;
+    struct timespec ts;
+    
+    // Open file
+    f = fopen(fname, "rb");
+    if (!f) {
+	printf("W125C: WRITE FATAL - cannot open file %s\n", fname);
+	return -1;
+    }
+    printf("W125C: INFO - Writing file %s\n", fname);
+    // Read and program
+    for (caddr=addr; ; ) {
+	// reading up to page boundary
+	todo = (caddr & 0xFFFF00) + 0x100 - caddr;
+	// or up to end of file
+	todo = fread(buf, 1, todo, f);
+	// Program page
+	// Write enable
+	w125c_FlashIO(FWRENB, NULL, NULL, 0);
+	// Check write enable bit
+	w125c_FlashIO(FRDSTA, NULL, rbuf, 1);
+	if (!(rbuf[0] & 0x02)) {
+	    printf("\nW125C: WRITE FATAL - Cannot set WRITE ENABLE bit\n");
+	    return -2;
+	}
+	// Start Program
+	w125c_FlashIO(FPROGP, &caddr, buf, -todo);
+	// Check erase start
+	w125c_FlashIO(FRDSTA, NULL, rbuf, 1);
+	if (!(rbuf[0] & 0x01)) {
+	    printf("\nW125C: WRITE FATAL - Erase didn't start\n");
+	    return -3;
+	}
+	if (!(rbuf[0] & 0x02)) {
+	    printf("\nW125C: WRITE FATAL - WRITE ENABLE bit unexpectedly cleared during erase\n");
+	    return -4;
+	}
+	// Wait for termination
+	ts.tv_sec = 0;
+	ts.tv_nsec = 100000; // 100 us
+	for (i=0; i < 50; i++ ) {	// max 5 ms
+	    // read status register
+	    w125c_FlashIO(FRDSTA, NULL, rbuf, 1);
+	    // lower bit 1 -- busy
+	    if (!(rbuf[0] & 0x01)) break;
+	    nanosleep(&ts, NULL);
+	}
+	if (i >= 50) {
+	    printf("\nW125C: WRITE FATAL - Timeout waiting for opration end\n");
+	    return -5;
+	}
+	caddr += todo;
+	if (!(caddr & 0x1FE00)) {
+	    printf("p");
+	    fflush(stdout);
+	}
+	if (feof(f)) break;
+    }
+    fclose(f);
+    printf("\nW125C: INFO - %d bytes written to flash\n", caddr - addr);
     return 0;
 }
 
@@ -327,7 +402,7 @@ int main(int argc, char **argv)
 	goto Quit;
     }
 //	Check FLASH ID
-    w125c_FlashRead(FGETID, NULL, buf, 20);
+    w125c_FlashIO(FGETID, NULL, buf, 20);
     if (memcmp(buf, flashID, sizeof(flashID))) {
         printf("W125C: FATAL -- wrong flash ID found or flash unreliable\nexpect:\t");
         for (i=0; i<sizeof(flashID); i++) printf("%2.2X ", flashID[i] & 0xFF);
@@ -378,6 +453,16 @@ int main(int argc, char **argv)
 		    w125c_FlashBCheck(addr, len);
 		    break;
 	    }
+	    break;
+	case 'W':
+	    if (argc < 4) {
+		w125c_Usage();
+		break;
+	    }
+	    w125c_Write(argv[3], 0);
+	    break;
+	default:
+	    w125c_Usage();
 	    break;
     }
 
