@@ -40,12 +40,6 @@
 #define SWAP_MODE VME4L_NO_SWAP
 #endif
 
-#if (SWAP_MODE == VME4L_NO_SWAP)
-#define SWAP2(A) __swap2(A)
-#else
-#define SWAP2(A) (A)
-#endif
-
 typedef struct {
     unsigned addr;
     unsigned len;
@@ -56,18 +50,7 @@ VMEMAP map = {0, 0, NULL};
 // module address
 unsigned maddr;
 
-unsigned __swap2(unsigned short i)
-{
-    union SWP {
-	unsigned short u;
-	char c[2];
-    } a, b;
-    a.u = i;
-    b.c[0] = a.c[1];
-    b.c[1] = a.c[0];
-    return b.u;
-}
-
+// reads VME mapped memory, A16/D16 assumed, odd byte 
 unsigned char vrd(unsigned adr)
 {
     union SWP {
@@ -78,6 +61,7 @@ unsigned char vrd(unsigned adr)
     return a.c[1];
 }
 
+// writes VME mapped memory, A16/D16 assumed, odd byte 
 unsigned char vwr(unsigned adr, unsigned char D)
 {
     union SWP {
@@ -90,36 +74,7 @@ unsigned char vwr(unsigned adr, unsigned char D)
     return a.c[1];
 }
 
-
-void RegTest(int N, unsigned repeat, VMEMAP *map)
-{
-    int i;
-    volatile unsigned *A;
-    volatile unsigned *T;
-    unsigned WA, RA, WT, RT;
-    unsigned err;
-    
-    A = &(map->ptr[N*0x40 + 1]);
-    T = &(map->ptr[N*0x40 + 3]);
-    err = 0;
-    srand48(time(0));
-    
-    for (i=0; i<repeat; i++) {
-	WA = mrand48();
-	WT = mrand48();
-	*A = WA;
-	*T = WT;
-	RA = *A;
-	RT = *T;
-	if (WA != RA || WT != RT) {
-	    err++;
-	    if (err < 100) printf("%6.6X: W(%8.8X %8.8X) != R(%8.8X %8.8X)\n", i, WA, WT, RA, RT);
-	}
-    }
-    printf("Test finished with %d errors.\n", err);
-}
-
-
+// no comments
 void w125c_Usage(void)
 {
     printf("Usage: cpldtool <serial#> <command> [<args>]\n");
@@ -133,11 +88,12 @@ void w125c_Usage(void)
     printf("\tWrite <filename> -- writes binary file to (preerased) FLASH from addr 0.\n");
     printf("\tRead <filename> [<bytes>] -- reads <bytes> from FLASH addr 0 to binary file.\n");
     printf("\tVerify <filename> -- verifies FLASH against binary file.\n");
-    printf("\tAutowrite <filename> -- does Erase (by file length), blank check, write and verify.");
+    printf("\tAutowrite <filename> -- does Erase (by file length), blank check, write, verify and PROG pulsing.");
     printf("\tProgram [<filename>] -- loads binary file directly to FPGA chain.\n");
     printf("\t\t With no argument only pulses PROG with Xilinx in SPI-Master mode\n");
 }
 
+// Maps VME from addr, len addresses
 int w125c_Map(unsigned addr, unsigned len, int fd)
 {
     int rc;
@@ -156,6 +112,14 @@ int w125c_Map(unsigned addr, unsigned len, int fd)
     return rc;
 }
 
+// All FLASH subroutines assert PROG to tristate Xilinx and leave
+// CPLD with asserted PROG and enabled FLASH access, but inactive FLASH CS
+
+// Executes one FLASH command cmd
+// if *adr is not NULL transfers 3 bytes of adr
+// positive len: reads len bytes to buf
+// negative len: writes len bytes from buf
+// zero len: no data transfer
 void w125c_FlashIO(char cmd, unsigned * adr, char * buf, int len) {
     
     int i;
@@ -190,7 +154,13 @@ void w125c_FlashIO(char cmd, unsigned * adr, char * buf, int len) {
     vwr(CSR, 0x22);
     return;
 }
- 
+
+// Erases FLASH in minimal portions of subsectors 
+// including those touched by addr and addr+len
+// addr - full 24 bit beginning address
+// len - length in bytes
+// optimized to unite subsectors to sectors of entire flash where possible
+// returns 0 on success
 int w125c_FlashErase(unsigned addr, unsigned len) {
     // first subsector
     unsigned baddr = addr >> 12;
@@ -272,6 +242,8 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
     return 0;
 }
 
+// Reads FLASH from addr to addr+len and checks for 0xFF values
+// returns 0 on success
 int w125c_FlashBCheck(unsigned addr, unsigned len) {
     unsigned char buf[4096];
     unsigned i;
@@ -297,6 +269,10 @@ int w125c_FlashBCheck(unsigned addr, unsigned len) {
     return 0;
 }
 
+// Writes binary file fname to FLASH starting at address addr
+// writes are made in 256 byte pages, total length defined by file size
+// FLASH should be preerased
+// returns 0 on success
 int w125c_FlashWrite(unsigned addr, char * fname) {
 
     FILE * f;
@@ -366,6 +342,8 @@ int w125c_FlashWrite(unsigned addr, char * fname) {
     return 0;
 }
 
+// Reads FLASH from address addr to addr+len to binary file fname
+// returns 0 on success
 int w125c_FlashRead(unsigned addr, unsigned len, char * fname) {
     unsigned char buf[4096];
     unsigned i;
@@ -393,6 +371,9 @@ int w125c_FlashRead(unsigned addr, unsigned len, char * fname) {
     return 0;
 }
 
+// Verifies FLASH from address addr against binary file fname
+// verification length defined by file size
+// returns 0 on success
 int w125c_FlashVerify(unsigned addr, char * fname) {
     unsigned char buf[4096];
     unsigned char fbuf[4096];
@@ -428,15 +409,87 @@ int w125c_FlashVerify(unsigned addr, char * fname) {
     return 0;
 }
 
+// Loads file fname directly to Xilinx, amount defined by file size
+// manipulates PROG as necessary
+// returns 0 on success
+int w125c_XilinxLoad(char * fname) {
+    
+    int i, j, todo;
+    FILE * f;
+    unsigned char buf[4096];
 
+    f = fopen(fname, "rb");
+    if (!f) {
+	printf("W125C: XILIXLOAD FATAL - cannot open file %s\n", fname);
+	return -1;
+    }
+    printf("W125C: INFO - Loading Xilinx with file %s\n", fname);
+    // assert PROG with enabled Xilinx access
+    vwr(CSR, 0x30);
+    // remove PROG, xilinx acess enabled
+    vwr(CSR, 0x10);
+    // wait for INIT
+    for (i=0; i<1000; i++) if (vrd(CSR) & 0x40) break;
+    if (i >= 1000) {
+	printf("W125C: XILIXLOAD FATAL - no INIT after PROG\n");
+	return -2;
+    }
+    // Load data
+    for (i=0;;) {
+	// read buffer
+	todo = sizeof(buf);
+	// or up to end of file
+	todo = fread(buf, 1, todo, f);
+	for (j=0; j<sizeof(buf); j++) vwr(SDAT, buf[j]); 
+	if (!(i & 0x1F000)) {
+	    printf("x");
+	    fflush(stdout);
+	}
+	i += todo;
+	if (feof(f)) break;
+    }
+    // disable Xilinx access
+    vwr(CSR, 0x00);
+    
+    fclose(f);
+    printf("\nW125C: INFO - %d bytes programmed to Xilinx\n", i);
+    return 0;
+}
+
+// Waits specified timeout in seconds for DONE to go high
+// returns 0 on success
+int w125c_WaitDone(int timeout) {
+    int i;
+    unsigned char buf;
+    char sym[] = {'.',':',';','"'};
+    
+    // Wait for DONE
+    for (i=0; i < timeout; i++) {
+	buf = vrd(CSR);
+	// Done obtained ?
+	if (buf & 0x80) break;
+	printf("%c", sym[buf >> 6]);
+	    fflush(stdout);
+	    sleep(1);
+    }
+    if (i<timeout) { 
+	printf(" *** DONE ***\n");
+	return 0;
+    } else {
+	printf(" !!! NOT Done !!!\n");
+	return -1;
+    }
+}
+
+// According to Usage()
 int main(int argc, char **argv)
 {
     int fd;
     int rc;
     int N, i;
-    char buf[4096];
+    int noprog = 0;
+    unsigned char buf[30];
     unsigned addr, len;
-    VME4L_SPACE spc, spcr;
     vmeaddr_t vmeaddr;
     char flashID[] = {0x20, 0xBA, 0x18, 0x10};
     struct stat st;
@@ -560,6 +613,23 @@ int main(int argc, char **argv)
 	    if (w125c_FlashWrite(0, argv[3])) break;
 	    if (w125c_FlashVerify(0, argv[3])) break;
 	    // Pulse prog here
+	    vwr(CSR, 0x20);
+	    vwr(CSR, 0x00);
+	    w125c_WaitDone(30);
+	    noprog = 1;
+	    break;
+	case 'P':
+	    if (argc < 4) {
+		// assert PROG, FLASH and Xilinx disabled = Xilinx SPI master
+		vwr(CSR, 0x20);
+		// remove PROG
+		vwr(CSR, 0x00);
+		w125c_WaitDone(30);
+	    } else {
+		w125c_XilinxLoad(argv[3]);
+		w125c_WaitDone(3);
+	    }
+	    noprog = 1;
 	    break;
 	default:
 	    w125c_Usage();
@@ -567,6 +637,8 @@ int main(int argc, char **argv)
     }
 
 Quit:
+//	After FLASH commands: disable FLASH and Xilinx access, but leave PROG asserted
+    if (!noprog) vwr(CSR, 0x20);
 //	Close VME	
     if (map.ptr != NULL) VME4L_UnMap(fd, map.ptr, map.len);
     VME4L_Close(fd);
