@@ -1,6 +1,5 @@
 /*
-    SvirLex 2014 - wfd125 manipulation tool through its CPLD via VME with TSI148 chipset
-    Using MEN drivers
+    SvirLex 2014 - wfd125 manipulation tool through its CPLD via vme_user kernel driver
 */
 #include <stdint.h>
 #include <stdio.h>
@@ -8,8 +7,9 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
-#include <MEN/vme4l.h>
-#include <MEN/vme4l_api.h>
+#include <fcntl.h>
+
+#include "vme_user.h"
 
 // module address space is max 8 regs at A000 + (SERIAL << 4)
 #define BASE 0xA000
@@ -39,37 +39,30 @@
 #define SWAP_MODE VME4L_NO_SWAP
 #endif
 
-typedef struct {
-    unsigned addr;
-    unsigned len;
-    unsigned *ptr;
-} VMEMAP;
+// board address
+unsigned board_offset;
 
-VMEMAP map = {0, 0, NULL};
-// module address
-unsigned maddr;
+int vme_fd;
 
 // reads VME mapped memory, A16/D16 assumed, odd byte 
 unsigned char vrd(unsigned adr)
 {
-    union SWP {
-	unsigned short u;
-	char c[2];
+    struct SWP {
+        char c[2];
     } a;
-    a.u = ((unsigned short *)map.ptr)[(adr + maddr)/2];
+    pread(vme_fd, &a, sizeof(a), board_offset + adr);
     return a.c[1];
 }
 
 // writes VME mapped memory, A16/D16 assumed, odd byte 
 unsigned char vwr(unsigned adr, unsigned char D)
 {
-    union SWP {
-	unsigned short u;
-	char c[2];
+    struct SWP {
+        char c[2];
     } a;
     a.c[1] = D;
     a.c[0] = 0;
-    ((unsigned short *)map.ptr)[(adr + maddr)/2] = a.u;
+    pwrite(vme_fd, &a, sizeof(a), board_offset + adr);
     return a.c[1];
 }
 
@@ -90,25 +83,6 @@ void w125c_Usage(void)
     printf("\tAutowrite <filename> -- does Erase (by file length), blank check, write, verify and PROG pulsing.");
     printf("\tProgram [<filename>] -- loads binary file directly to FPGA chain.\n");
     printf("\t\t With no argument only pulses PROG with Xilinx in SPI-Master mode\n");
-}
-
-// Maps VME from addr, len addresses
-int w125c_Map(unsigned addr, unsigned len, int fd)
-{
-    int rc;
-    if (map.ptr != NULL) VME4L_UnMap(fd, map.ptr, map.len);
-    rc = VME4L_Map(fd, addr, len, (void **)&map.ptr);
-    if (rc != 0) {
-	map.addr = 0;
-	map.len = 0;
-	map.ptr = NULL;
-	printf("Mapping region [%8.8X-%8.8X] failed with error %m\n",
-	    addr, addr + len - 1);
-    } else {
-	map.addr = addr;
-	map.len = len;
-    }
-    return rc;
 }
 
 // All FLASH subroutines assert PROG to tristate Xilinx and leave
@@ -483,36 +457,40 @@ int w125c_WaitDone(int timeout) {
 // According to Usage()
 int main(int argc, char **argv)
 {
-    int fd;
     int rc;
     int N, i;
     int noprog = 0;
     unsigned char buf[30];
     unsigned addr, len;
-    vmeaddr_t vmeaddr;
+    struct vme_master master;
     char flashID[] = {0x20, 0xBA, 0x18, 0x10};
     struct stat st;
+    int retval;
     
     printf("*** WFD125 Programming through CPLD tool (c) SvirLex 2014 ***\n");
 //	Open VME in A16/D16 and map entire region
-    fd = VME4L_Open(0);
-    if (fd < 0) {
-	printf("W125C: FATAL - can not open VME - %m\n");
-	return fd;
+    vme_fd = open("/dev/bus/vme/m0", O_RDWR);
+    if (vme_fd == -1) {
+        perror("W125C: FATAL - can not open VME");
+        printf("Try running:\n\tmodprobe vme\n\tmodprobe vme_tsi148\n\tmodprobe vme_user bus=0\n");
+        return EXIT_FAILURE;
     }
-    rc = VME4L_SwapModeSet(fd, SWAP_MODE);
-    if (rc) {
-	printf("W125C: FATAL - can not set swap mode - %m\n");
-	goto Quit;
-    }
-    rc = w125c_Map(0, 0x10000, fd);
-    if (rc) {
-	printf("W125C: FATAL - can not map A16 memory - %m\n");
+
+    master.enable = 1;
+    master.vme_addr = 0x0;
+    master.size = 0x10000;
+    master.aspace = VME_A16;
+    master.cycle = VME_USER | VME_DATA;
+    master.dwidth = VME_D16;
+
+    retval = ioctl(vme_fd, VME_SET_MASTER, &master);
+    if (retval != 0) {
+	perror("W125C: FATAL - can not map A16 memory");
 	goto Quit;
     }
 //  	Decode serial and check
     if (argc < 3) { w125c_Usage(); goto Quit; }
-    maddr = BASE + ((N=strtoul(argv[1], NULL, 0)) << 4);
+    board_offset = BASE + ((N=strtoul(argv[1], NULL, 0)) << 4);
 //	Check module serial
     if (N != vrd(SNUM)) {
 	printf("W125C: FATAL - No module with serial number %d found OR CPLD not configured\n", N);
@@ -639,7 +617,6 @@ Quit:
 //	After FLASH commands: disable FLASH and Xilinx access, but leave PROG asserted
     if (!noprog) vwr(CSR, 0x20);
 //	Close VME	
-    if (map.ptr != NULL) VME4L_UnMap(fd, map.ptr, map.len);
-    VME4L_Close(fd);
+    close(vme_fd);
     return 0;
 }
