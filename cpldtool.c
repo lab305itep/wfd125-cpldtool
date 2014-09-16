@@ -10,7 +10,6 @@
 #include <sys/stat.h>
 #include <MEN/vme4l.h>
 #include <MEN/vme4l_api.h>
-#include <readline/readline.h>
 
 // module address space is max 8 regs at A000 + (SERIAL << 4)
 #define BASE 0xA000
