@@ -532,6 +532,7 @@ int main(int argc, char **argv)
     printf("*** Found module with Serial:%d Batch:%d Flash MfcID:%2.2X MemType:%2.2X MemCap:%2.2X\n",
 	vrd(SNUM), vrd(BNUM), buf[0] & 0xFF, buf[1] & 0xFF, buf[2] & 0xFF);
 
+    rc = 0;
 //	Decode command and args	
     switch (toupper(argv[2][0])) {
 	case 'E':
@@ -624,10 +625,10 @@ int main(int argc, char **argv)
 		vwr(CSR, 0x20);
 		// remove PROG
 		vwr(CSR, 0x00);
-		w125c_WaitDone(30);
+		rc = w125c_WaitDone(30);
 	    } else {
 		w125c_XilinxLoad(argv[3]);
-		w125c_WaitDone(3);
+		rc = w125c_WaitDone(3);
 	    }
 	    noprog = 1;
 	    break;
@@ -642,5 +643,5 @@ Quit:
 //	Close VME	
     if (map.ptr != NULL) VME4L_UnMap(fd, map.ptr, map.len);
     VME4L_Close(fd);
-    return 0;
+    return rc;
 }
