@@ -1,6 +1,5 @@
 /*
-    SvirLex 2014 - wfd125 manipulation tool through its CPLD via VME with TSI148 chipset
-    Using MEN drivers
+    SvirLex 2014 - wfd125 manipulation tool through its CPLD via vme_user kernel driver
 */
 #include <stdint.h>
 #include <stdio.h>
@@ -8,8 +7,10 @@
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
-#include <MEN/vme4l.h>
-#include <MEN/vme4l_api.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+
+#include "vme_user.h"
 
 // module address space is max 8 regs at A000 + (SERIAL << 4)
 #define BASE 0xA000
@@ -95,10 +96,11 @@ void w125c_Usage(void)
 // Maps VME from addr, len addresses
 int w125c_Map(unsigned addr, unsigned len, int fd)
 {
-    int rc;
-    if (map.ptr != NULL) VME4L_UnMap(fd, map.ptr, map.len);
-    rc = VME4L_Map(fd, addr, len, (void **)&map.ptr);
-    if (rc != 0) {
+    int rc = 1;
+    if (map.ptr != NULL) munmap(map.ptr, map.len);
+    map.ptr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, addr);
+    if (map.ptr == MAP_FAILED)
+    {
 	map.addr = 0;
 	map.len = 0;
 	map.ptr = NULL;
@@ -107,6 +109,7 @@ int w125c_Map(unsigned addr, unsigned len, int fd)
     } else {
 	map.addr = addr;
 	map.len = len;
+	rc = 0;
     }
     return rc;
 }
@@ -489,20 +492,29 @@ int main(int argc, char **argv)
     int noprog = 0;
     unsigned char buf[30];
     unsigned addr, len;
-    vmeaddr_t vmeaddr;
+    struct vme_master master;
     char flashID[] = {0x20, 0xBA, 0x18, 0x10};
     struct stat st;
     
     printf("*** WFD125 Programming through CPLD tool (c) SvirLex 2014 ***\n");
 //	Open VME in A16/D16 and map entire region
-    fd = VME4L_Open(0);
-    if (fd < 0) {
-	printf("W125C: FATAL - can not open VME - %m\n");
-	return fd;
+    fd = open("/dev/bus/vme/m0", O_RDWR);
+    if (fd == -1) {
+        perror("W125C: FATAL - can not open VME");
+        printf("Try running:\n\tmodprobe vme\n\tmodprobe vme_tsi148\n\tmodprobe vme_user bus=0\n");
+        return EXIT_FAILURE;
     }
-    rc = VME4L_SwapModeSet(fd, SWAP_MODE);
-    if (rc) {
-	printf("W125C: FATAL - can not set swap mode - %m\n");
+
+    master.enable = 1;
+    master.vme_addr = 0x0;
+    master.size = 0x10000;
+    master.aspace = VME_A16;
+    master.cycle = VME_USER | VME_DATA;
+    master.dwidth = VME_D16;
+
+    rc = ioctl(fd, VME_SET_MASTER, &master);
+    if (rc != 0) {
+	perror("W125C: FATAL - can not setup VME window");
 	goto Quit;
     }
     rc = w125c_Map(0, 0x10000, fd);
@@ -639,7 +651,6 @@ Quit:
 //	After FLASH commands: disable FLASH and Xilinx access, but leave PROG asserted
     if (!noprog) vwr(CSR, 0x20);
 //	Close VME	
-    if (map.ptr != NULL) VME4L_UnMap(fd, map.ptr, map.len);
-    VME4L_Close(fd);
+    close(fd);
     return 0;
 }
