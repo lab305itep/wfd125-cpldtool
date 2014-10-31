@@ -538,7 +538,7 @@ int main(int argc, char **argv)
         printf("\nobtain:\t");
         for (i=0; i<sizeof(flashID); i++) printf("%2.2X ", buf[i] & 0xFF);
         printf("\n");
-        goto Quit;
+        goto QuitAfterFlash;
     }
     printf("*** Found module with Serial:%d Batch:%d Flash MfcID:%2.2X MemType:%2.2X MemCap:%2.2X\n",
 	vrd(SNUM), vrd(BNUM), buf[0] & 0xFF, buf[1] & 0xFF, buf[2] & 0xFF);
@@ -647,9 +647,10 @@ int main(int argc, char **argv)
 	    break;
     }
 
-Quit:
+QuitAfterFlash:
 //	After FLASH commands: disable FLASH and Xilinx access, but leave PROG asserted
     if (!noprog) vwr(CSR, 0x20);
+Quit:
 //	Close VME	
     close(fd);
     return 0;
