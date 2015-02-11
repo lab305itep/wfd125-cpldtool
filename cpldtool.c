@@ -186,7 +186,7 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
 	// Check write enable bit
 	w125c_FlashIO(FRDSTA, NULL, buf, 1);
 	if (!(buf[0] & 0x02)) {
-	    printf("\nW125C: ERASE FATAL - Cannot set WRITE ENABLE bit\n");
+	    printf("\nW125C: ERASE FATAL - Cannot set WRITE ENABLE bit. Status %X\n", buf[0]);
 	    return -1;
 	}
 	// if from first subsector to the last one -- erase all
@@ -291,6 +291,8 @@ int w125c_FlashWrite(unsigned addr, char * fname) {
 	return -1;
     }
     printf("W125C: INFO - Writing file %s\n", fname);
+    // Clear status flag reg (error bits)
+    w125c_FlashIO(FCLRFL, NULL, NULL, 0);
     // Read and program
     for (caddr=addr; ; ) {
 	// reading up to page boundary
@@ -311,11 +313,11 @@ int w125c_FlashWrite(unsigned addr, char * fname) {
 	// Check erase start
 	w125c_FlashIO(FRDSTA, NULL, rbuf, 1);
 	if (!(rbuf[0] & 0x01)) {
-	    printf("\nW125C: WRITE FATAL - Erase didn't start\n");
+	    printf("\nW125C: WRITE FATAL - Write didn't start\n");
 	    return -3;
 	}
 	if (!(rbuf[0] & 0x02)) {
-	    printf("\nW125C: WRITE FATAL - WRITE ENABLE bit unexpectedly cleared during erase\n");
+	    printf("\nW125C: WRITE FATAL - WRITE ENABLE bit unexpectedly cleared during write\n");
 	    return -4;
 	}
 	// Wait for termination
