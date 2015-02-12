@@ -74,6 +74,17 @@ unsigned char vwr(unsigned adr, unsigned char D)
     return a.c[1];
 }
 
+// Wait us < 1s
+void usleep(long us)
+{
+    struct timespec ts;
+
+    ts.tv_sec = 0;
+    ts.tv_nsec = 1000*us; // 100 ms
+    nanosleep(&ts, NULL);
+    return;
+}
+
 // no comments
 void w125c_Usage(void)
 {
@@ -88,7 +99,7 @@ void w125c_Usage(void)
     printf("\tWrite <filename> -- writes binary file to (preerased) FLASH from addr 0.\n");
     printf("\tRead <filename> [<bytes>] -- reads <bytes> from FLASH addr 0 to binary file.\n");
     printf("\tVerify <filename> -- verifies FLASH against binary file.\n");
-    printf("\tAutowrite <filename> -- does Erase (by file length), blank check, write, verify and PROG pulsing.");
+    printf("\tAutowrite <filename> -- does Erase (by file length), blank check, write, verify and PROG pulsing.\n");
     printf("\tProgram [<filename>] -- loads binary file directly to FPGA chain.\n");
     printf("\t\t With no argument only pulses PROG with Xilinx in SPI-Master mode\n");
 }
@@ -174,7 +185,6 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
     int i;
     // Max operation time, in 100 ms intervals
     int timeout = 0;
-    struct timespec ts;
     
     printf("W125C: INFO - Erasing subsectors %2.2X--%2.2X\n", baddr, eaddr);
     // Clear status flag reg (error bits)
@@ -224,8 +234,6 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
 	    return -3;
 	}
 	// Wait for termination
-	ts.tv_sec = 0;
-	ts.tv_nsec = 100000000; // 100 ms
 	for (i=0; i < timeout; i++ ) {
 	    // read status register
 	    w125c_FlashIO(FRDSTA, NULL, buf, 1);
@@ -233,7 +241,7 @@ int w125c_FlashErase(unsigned addr, unsigned len) {
 	    if (!(buf[0] & 0x01)) break;
 	    if (!((i+1)%10)) printf(".");
 	    fflush(stdout);
-	    nanosleep(&ts, NULL);
+	    usleep(100000);	// 100 ms
 	}
 	if (i >= timeout) {
 	    printf("\nW125C: ERASE FATAL - Timeout waiting for opration end\n");
@@ -282,7 +290,6 @@ int w125c_FlashWrite(unsigned addr, char * fname) {
     unsigned char buf[256];
     unsigned char rbuf[2];
     unsigned caddr;
-    struct timespec ts;
     
     // Open file
     f = fopen(fname, "rb");
@@ -321,14 +328,12 @@ int w125c_FlashWrite(unsigned addr, char * fname) {
 	    return -4;
 	}
 	// Wait for termination
-	ts.tv_sec = 0;
-	ts.tv_nsec = 100000; // 100 us
 	for (i=0; i < 50; i++ ) {	// max 5 ms
 	    // read status register
 	    w125c_FlashIO(FRDSTA, NULL, rbuf, 1);
 	    // lower bit 1 -- busy
 	    if (!(rbuf[0] & 0x01)) break;
-	    nanosleep(&ts, NULL);
+	    usleep(100);	// 100 us
 	}
 	if (i >= 50) {
 	    printf("\nW125C: WRITE FATAL - Timeout waiting for opration end\n");
@@ -397,7 +402,7 @@ int w125c_FlashVerify(unsigned addr, char * fname) {
 	w125c_FlashIO(FRDMEM, &i, buf, toread);
 	for (j=0; j<toread; j++) {
 	    if (buf[j] != fbuf[j]) {
-		printf("\nW125C: VERIFY FATAL - Failed at address 0x%6.6X: 0x%2.2X \n", i+j, buf[j] & 0xFF);
+		printf("\nW125C: VERIFY FATAL - Failed at address 0x%6.6X: 0x%2.2X(0x%2.2X) \n", i+j, buf[j] & 0xFF, fbuf[j] & 0xFF);
 		return -1;
 	    }
 	}
