@@ -1,6 +1,7 @@
 /*
     SvirLex 2014 - wfd125 manipulation tool through its CPLD via vme_user kernel driver
 */
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #include "vme_user.h"
 
@@ -20,7 +22,8 @@
 #define SNUM 4
 #define BNUM 6
 // FLASH commands
-#define FGETID 0x9E	// Get ID
+// #define FGETID 0x9E	// Get ID
+#define FGETID 0x9F	// Get ID
 #define FRDSTA 0x05	// Read status register
 #define FCLRFL 0x50	// Clear status flag register
 #define FRDMEM 0x03	// Read memory
@@ -75,6 +78,7 @@ unsigned char vwr(unsigned adr, unsigned char D)
 }
 
 // Wait us < 1s
+/*
 void usleep(long us)
 {
     struct timespec ts;
@@ -84,6 +88,7 @@ void usleep(long us)
     nanosleep(&ts, NULL);
     return;
 }
+*/
 
 // no comments
 void w125c_Usage(void)
@@ -500,7 +505,8 @@ int main(int argc, char **argv)
     unsigned char buf[30];
     unsigned addr, len;
     struct vme_master master;
-    char flashID[] = {0x20, 0xBA, 0x18, 0x10};
+    char flashIDA[] = {0x20, 0xBA, 0x18, 0x10};
+    char flashIDB[] = {0xEF, 0x40, 0x18};
     struct stat st;
     
     printf("*** WFD125 Programming through CPLD tool (c) SvirLex 2014 ***\n");
@@ -539,11 +545,14 @@ int main(int argc, char **argv)
     }
 //	Check FLASH ID
     w125c_FlashIO(FGETID, NULL, buf, 20);
-    if (memcmp(buf, flashID, sizeof(flashID))) {
+    if (toupper(argv[2][0]) != 'P' && memcmp(buf, flashIDA, sizeof(flashIDA)) && 
+	memcmp(buf, flashIDB, sizeof(flashIDB))) {
         printf("W125C: FATAL -- wrong flash ID found or flash unreliable\nexpect:\t");
-        for (i=0; i<sizeof(flashID); i++) printf("%2.2X ", flashID[i] & 0xFF);
+        for (i=0; i<sizeof(flashIDA); i++) printf("%2.2X ", flashIDA[i] & 0xFF);
+	printf(" or ");
+        for (i=0; i<sizeof(flashIDB); i++) printf("%2.2X ", flashIDB[i] & 0xFF);
         printf("\nobtain:\t");
-        for (i=0; i<sizeof(flashID); i++) printf("%2.2X ", buf[i] & 0xFF);
+        for (i=0; i<sizeof(flashIDA); i++) printf("%2.2X ", buf[i] & 0xFF);
         printf("\n");
         goto QuitAfterFlash;
     }
